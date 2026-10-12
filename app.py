@@ -1,66 +1,99 @@
 import streamlit as st
 from supabase import create_client, Client
 
-# --- CONFIGURAZIONE PAGINA ---
+# --- CONFIGURAZIONE PAGINA STREAMLIT ---
 st.set_page_config(
-    page_title="Cerca Volantini & Offerte",
+    page_title="SuperConveniente - Comparatore Offerte",
     page_icon="🛒",
-    layout="centered"
+    layout="wide"
 )
 
-# --- CONNESSIONE A SUPABASE ---
-# Streamlit permette di memorizzare le chiavi in modo sicuro nei "Secrets"
+# --- CONNESSIONE SUPABASE ---
+# Assicurati di impostare SUPABASE_URL e SUPABASE_KEY nei secrets di Streamlit (o sostituiscili qui)
+try:
+    SUPABASE_URL = st.secrets["SUPABASE_URL"]
+    SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+except Exception:
+    # Fallback per test locali o Colab se non usi i secrets di Streamlit
+    SUPABASE_URL = "IL_TUO_SUPABASE_URL"
+    SUPABASE_KEY = " LA_TUA_SUPABASE_KEY"
+
 @st.cache_resource
-def init_connection():
-    url = st.secrets["SUPABASE_URL"]
-    key = st.secrets["SUPABASE_KEY"]
-    return create_client(url, key)
+def init_supabase() -> Client:
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
-supabase = init_connection()
+supabase = init_supabase()
 
-# --- INTERFACCIA GRAFICA ---
-st.title("🛒 Trova Prezzi nei Volantini")
-st.write("Cerca un prodotto per scoprire in quale supermercato costa meno!")
+# --- HEADER DELLA DASHBOARD ---
+st.title("🛒 SuperConveniente - Monitor Offerte Volantini")
+st.markdown("Confronta i prezzi dei volantini estratti e salvati nel database in tempo reale.")
 
-# Casella di ricerca
-query = st.text_input("Cosa stai cercando?", placeholder="es. latte, caffè, pasta, olio...")
+# --- BARRA LATERALE (FILTRI) ---
+st.sidebar.header("🔍 Filtri di Ricerca")
 
-if query:
-    with st.spinner("Cerco tra le offerte..."):
-        try:
-            # Esegue la query su Supabase
-            response = (
-                supabase.table("offerte")
-                .select("supermercato, prodotto, prezzo, unita, data_inserimento")
-                .ilike("prodotto", f"%{query.strip().lower()}%")
-                .order("prezzo", desc=False)
-                .execute()
-            )
+# Carica le località disponibili nel DB per popolare il filtro
+@st.cache_data(ttl=600)
+def get_localita():
+    try:
+        response = supabase.table("offerte").select("localita").execute()
+        locs = list(set([item["localita"].capitalize() for item in response.data]))
+        return sorted(locs)
+    except Exception:
+        return []
+
+localita_disponibili = get_localita()
+localita_selezionata = st.sidebar.selectbox(
+    "Seleziona Punto Vendita / Località", 
+    ["Tutti"] + localita_disponibili
+)
+
+query_prodotto = st.sidebar.text_input("Cerca prodotto (es. latte, pasta, coca...)")
+
+# --- QUERY AL DATABASE SUPABASE ---
+@st.cache_data(ttl=60)
+def carica_offerte(localita, ricerca):
+    try:
+        query = supabase.table("offerte").select("*")
+        
+        if localita != "Tutti":
+            query = query.ilike("localita", localita)
             
-            risultati = response.data
+        if ricerca:
+            query = query.ilike("prodotto", f"%{ricerca}%")
             
-            if not risultati:
-                st.warning(f"Nessun risultato trovato per '{query}'.")
-            else:
-                st.success(f"Trovate {len(risultati)} offerte!")
-                
-                # Mostra i risultati in una tabella pulita e ordinata
-                for r in risultati:
-                    superm = r.get("supermercato", "").upper()
-                    prod = r.get("prodotto", "").title()
-                    prezzo = r.get("prezzo", 0.0)
-                    unita = r.get("unita", "€")
-                    
-                    # Creiamo un box grafico per ogni offerta
-                    with st.container():
-                        col1, col2, col3 = st.columns([2, 4, 2])
-                        with col1:
-                            st.markdown(f"**🏪 {superm}**")
-                        with col2:
-                            st.markdown(f"{prod}")
-                        with col3:
-                            st.markdown(f"### `{prezzo:.2f} {unita}`")
-                        st.divider()
+        response = query.order("prezzo", desc=False).execute()
+        return response.data
+    except Exception as e:
+        st.error(f"Errore nel recupero dati da Supabase: {e}")
+        return []
 
-        except Exception as e:
-                st.error(f"Errore durante la connessione al database: {e}")
+dati_offerte = carica_offerte(localita_selezionata, query_prodotto)
+
+# --- CORPO PRINCIPALE ---
+col1, col2, col3 = st.columns(3)
+col1.metric("Offerte Trovate", len(dati_offerte))
+if dati_offerte:
+    prezzi = [item["prezzo"] for item in dati_offerte]
+    col2.metric("Prezzo Minimo", f"€ {min(prezzi):.2f}")
+    col3.metric("Prezzo Medio", f"€ {sum(prezzi)/len(prezzi):.2f}")
+
+st.markdown("---")
+
+if dati_offerte:
+    st.subheader(f"📋 Risultati Offerte ({len(dati_offerte)})")
+    
+    # Rendi la visualizzazione pulita sotto forma di tabella interattiva
+    import pandas as pd
+    df = pd.DataFrame(dati_offerte)
+    
+    # Rinomina e seleziona le colonne per l'utente finale
+    df_display = df[["supermercato", "localita", "marca", "prodotto", "prezzo", "unita"]].copy()
+    df_display.columns = ["Supermercato", "Località", "Marca", "Prodotto", "Prezzo (€", "Unità"]
+    
+    st.dataframe(
+        df_display, 
+        use_container_width=True,
+        hide_index=True
+    )
+else:
+    st.info("ℹ️ Nessuna offerta trovata con i filtri selezionati o database vuoto. Esegui prima lo script di scraping in Colab!")
