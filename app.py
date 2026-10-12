@@ -11,22 +11,19 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- CONNESSIONI (SUPABASE & GEMINI) ---
+# --- CONNESSIONI SICURE (TRAMITE SECRETS) ---
 try:
     SUPABASE_URL = st.secrets["SUPABASE_URL"]
     SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
-    # Recupera la chiave API di Gemini dai secrets di Streamlit
-    GEMINI_API_KEY = st.secrets["GEMINI_API_KEY_1"] 
-except Exception:
-    # Valori di fallback o lettura da Colab/ambiente locale
-    SUPABASE_URL = "IL_TUO_SUPABASE_URL"
-    SUPABASE_KEY = "LA_TUA_SUPABASE_KEY"
-    GEMINI_API_KEY = "LA_TUA_GEMINI_API_KEY"
+    GEMINI_API_KEY = st.secrets["GEMINI_API_KEY_1"]
+except Exception as e:
+    st.error("⚠️ Configurazione dei Secrets mancante! Assicurati di aver configurato correttamente le credenziali in Streamlit Cloud o nel file locale secrets.toml.")
+    st.stop()
 
 @st.cache_resource
 def init_clients():
     supabase_client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    ai_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY != "LA_TUA_GEMINI_API_KEY" else None
+    ai_client = genai.Client(api_key=GEMINI_API_KEY)
     return supabase_client, ai_client
 
 supabase, ai_client = init_clients()
@@ -52,7 +49,7 @@ def ottimizza_query_con_ia(testo_grezzo):
     La ricerca grezza è: "{testo_grezzo}"
     
     Estrai solo le parole chiave essenziali, il nome della marca o del prodotto normalizzate e corrette da eventuali errori di battitura, in minuscolo, senza fronzoli. 
-    Esempio: "maionese calve" -> "mayonese calve" o "maionese calve". Restituisci SOLO la stringa di ricerca pulita.
+    Restituisci SOLO la stringa di ricerca pulita.
     """
     try:
         response = ai_client.models.generate_content(
@@ -69,14 +66,14 @@ if richiesta_utente and usa_ia:
     with st.spinner("🤖 Gemini sta analizzando e ottimizzando la tua ricerca..."):
         query_cercata = ottimizza_query_con_ia(richiesta_utente)
         if query_cercata != richiesta_utente.lower():
-            st.sidebar.caption(p if (p := f"🔎 Ricerca interpretata come: *{query_cercata}*") else "")
+            st.sidebar.caption(f"🔎 Ricerca interpretata come: *{query_cercata}*")
 
 # Caricamento Località per il filtro opzionale
 @st.cache_data(ttl=600)
 def get_localita():
     try:
         response = supabase.table("offerte").select("localita").execute()
-        return sorted(list(set([item["localita"].capitalize() for item in response.data])))
+        return sorted(list(set([item["localita"].capitalize() for item in response.data if item.get("localita")])))
     except Exception:
         return []
 
@@ -129,6 +126,6 @@ if richiesta_utente:
             hide_index=True
         )
     else:
-        st.warning(f"Nessun prodotto trovato per '{richiesta_utente}' (cercato come '{query_cercata}'). Prova con un altro termine o verifica che i volantini siano stati importati.")
+        st.warning(f"Nessun prodotto trovato per '{richiesta_utente}' (cercato come '{query_cercata}'). Prova con un altro termine o verifica che i volantini siano stati importati nel database.")
 else:
     st.info("👈 Digita un prodotto nella barra laterale per iniziare la ricerca intelligente.")
